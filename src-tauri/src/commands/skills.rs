@@ -182,6 +182,17 @@ fn parse_json_array(s: Option<String>) -> Option<Vec<String>> {
 
 const SKILL_SELECT_FIELDS: &str = "id, name, description, content, allowed_tools, model, disable_model_invocation, tags, source, source_path, is_favorite, context, agent, hooks, paths, shell, once_per_session, effort, created_at, updated_at";
 
+/// Returns `SKILL_SELECT_FIELDS` with each field prefixed by the given table alias
+/// (e.g. `skill_select_fields_prefixed("s")` → `"s.id, s.name, ..."`).
+/// Use this in joined queries so the column list never drifts from `row_to_skill_with_offset`.
+fn skill_select_fields_prefixed(prefix: &str) -> String {
+    SKILL_SELECT_FIELDS
+        .split(", ")
+        .map(|f| format!("{}.{}", prefix, f))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
     Ok(Skill {
         id: row.get(0)?,
@@ -567,11 +578,14 @@ pub fn toggle_project_skill(
         .map_err(|e| e.to_string())?;
 
     // Get project path and skill details
-    let query = "SELECT p.path, s.id, s.name, s.description, s.content, s.allowed_tools, s.model, s.disable_model_invocation, s.tags, s.source, s.source_path, s.is_favorite, s.created_at, s.updated_at
+    let query = format!(
+        "SELECT p.path, {}
          FROM project_skills ps
          JOIN projects p ON ps.project_id = p.id
          JOIN skills s ON ps.skill_id = s.id
-         WHERE ps.id = ?".to_string();
+         WHERE ps.id = ?",
+        skill_select_fields_prefixed("s"),
+    );
     let mut stmt = db_guard.conn().prepare(&query).map_err(|e| e.to_string())?;
 
     let (project_path, skill): (String, Skill) = stmt
@@ -625,15 +639,24 @@ pub fn get_project_skills(
     project_id: i64,
 ) -> Result<Vec<ProjectSkill>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
-    let query = "SELECT ps.id, ps.skill_id, ps.is_enabled,
-                s.id, s.name, s.description, s.content, s.allowed_tools, s.model, s.disable_model_invocation, s.tags, s.source, s.source_path, s.is_favorite, s.created_at, s.updated_at
+    get_project_skills_from_db(&db, project_id)
+}
+
+pub(crate) fn get_project_skills_from_db(
+    db: &Database,
+    project_id: i64,
+) -> Result<Vec<ProjectSkill>, String> {
+    let query = format!(
+        "SELECT ps.id, ps.skill_id, ps.is_enabled, {}
          FROM project_skills ps
          JOIN skills s ON ps.skill_id = s.id
          WHERE ps.project_id = ?
-         ORDER BY s.name".to_string();
+         ORDER BY s.name",
+        skill_select_fields_prefixed("s"),
+    );
     let mut stmt = db.conn().prepare(&query).map_err(|e| e.to_string())?;
 
-    let skills = stmt
+    let rows = stmt
         .query_map([project_id], |row| {
             Ok(ProjectSkill {
                 id: row.get(0)?,
@@ -642,11 +665,10 @@ pub fn get_project_skills(
                 skill: row_to_skill_with_offset(row, 3)?,
             })
         })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .map_err(|e| e.to_string())?;
 
-    Ok(skills)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
 }
 
 // Skill Files (references, assets, scripts)
@@ -1958,5 +1980,96 @@ mod tests {
         // Should succeed since we skip validation
         let skill = create_skill_in_db_unvalidated(&db, &req).unwrap();
         assert_eq!(skill.name, "INVALID_NAME");
+    }
+
+    // ========================================================================
+    // get_project_skills regression (issue #215)
+    //
+    // The join query used to select an outdated subset of skill columns, so
+    // `row_to_skill_with_offset` failed and `filter_map(|r| r.ok())` silently
+    // discarded every row — the UI showed an "added" toast while the assigned
+    // list stayed empty. Both columns must stay aligned with SKILL_SELECT_FIELDS.
+    // ========================================================================
+
+    fn insert_project(db: &Database, name: &str, path: &str) -> i64 {
+        db.conn()
+            .execute(
+                "INSERT INTO projects (name, path, has_mcp_file, has_settings_file)
+                 VALUES (?, ?, 0, 0)",
+                params![name, path],
+            )
+            .unwrap();
+        db.conn().last_insert_rowid()
+    }
+
+    #[test]
+    fn test_get_project_skills_returns_assigned_skill() {
+        let db = Database::in_memory().unwrap();
+
+        let skill = create_skill_in_db(&db, &sample_skill()).unwrap();
+        let project_id = insert_project(&db, "p", "/tmp/p");
+
+        db.conn()
+            .execute(
+                "INSERT INTO project_skills (project_id, skill_id) VALUES (?, ?)",
+                params![project_id, skill.id],
+            )
+            .unwrap();
+
+        let assigned = get_project_skills_from_db(&db, project_id).unwrap();
+
+        assert_eq!(assigned.len(), 1, "assigned skill should be returned");
+        assert_eq!(assigned[0].skill_id, skill.id);
+        assert_eq!(assigned[0].skill.name, "test-skill");
+        assert!(assigned[0].is_enabled);
+    }
+
+    #[test]
+    fn test_get_project_skills_reads_all_columns() {
+        // Populate every nullable column added by later migrations so that a
+        // truncated SELECT or a misordered offset would fail the row mapper.
+        let db = Database::in_memory().unwrap();
+
+        let req = CreateSkillRequest {
+            context: Some("session".to_string()),
+            agent: Some("agent-name".to_string()),
+            hooks: Some("on-start".to_string()),
+            paths: Some(vec!["src/**".to_string()]),
+            shell: Some("pwsh".to_string()),
+            once: Some(true),
+            effort: Some("high".to_string()),
+            ..sample_skill()
+        };
+        let skill = create_skill_in_db(&db, &req).unwrap();
+        let project_id = insert_project(&db, "p", "/tmp/p");
+
+        db.conn()
+            .execute(
+                "INSERT INTO project_skills (project_id, skill_id) VALUES (?, ?)",
+                params![project_id, skill.id],
+            )
+            .unwrap();
+
+        let assigned = get_project_skills_from_db(&db, project_id).unwrap();
+
+        assert_eq!(assigned.len(), 1);
+        let s = &assigned[0].skill;
+        assert_eq!(s.context.as_deref(), Some("session"));
+        assert_eq!(s.agent.as_deref(), Some("agent-name"));
+        assert_eq!(s.hooks.as_deref(), Some("on-start"));
+        assert_eq!(s.paths, Some(vec!["src/**".to_string()]));
+        assert_eq!(s.shell.as_deref(), Some("pwsh"));
+        assert_eq!(s.once, Some(true));
+        assert_eq!(s.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn test_get_project_skills_empty_when_no_assignment() {
+        let db = Database::in_memory().unwrap();
+        let project_id = insert_project(&db, "p", "/tmp/p");
+
+        let assigned = get_project_skills_from_db(&db, project_id).unwrap();
+
+        assert!(assigned.is_empty());
     }
 }
