@@ -50,6 +50,13 @@ export interface ParsedSubAgent {
 	permissionMode?: string;
 	skills?: string[];
 	tags?: string[];
+	disallowedTools?: string[];
+	maxTurns?: number;
+	memory?: string;
+	background?: boolean;
+	effort?: string;
+	isolation?: string;
+	initialPrompt?: string;
 }
 
 export interface ParseResult<T> {
