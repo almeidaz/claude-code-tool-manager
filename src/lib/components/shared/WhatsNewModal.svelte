@@ -50,6 +50,46 @@
 			.replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
 			// Wrap consecutive list items in ul
 			.replace(/(<li[^>]*>.*<\/li>\n?)+/g, '<ul class="my-2 space-y-1">$&</ul>')
+			// GFM tables: `| h1 | h2 |\n|---|---|\n| a | b |` -> <table>. Run before
+			// the \n -> <br> conversion below so newlines inside the table survive.
+			// Supports column alignment via the separator row (`:---`, `---:`, `:---:`).
+			.replace(
+				/^(\|[^\n]+\|)\n(\|[-:| ]+\|)\n((?:\|[^\n]+\|\n?)+)/gm,
+				(_match: string, headerLine: string, separatorLine: string, bodyBlock: string) => {
+					const parseCells = (line: string): string[] =>
+						line.slice(1, -1).split('|').map((c) => c.trim());
+					const headers = parseCells(headerLine);
+					const aligns = parseCells(separatorLine).map((sep) => {
+						const left = sep.startsWith(':');
+						const right = sep.endsWith(':');
+						if (left && right) return 'center';
+						if (right) return 'right';
+						if (left) return 'left';
+						return '';
+					});
+					const rows: string[][] = bodyBlock.trim().split('\n').map(parseCells);
+					const styleAttr = (i: number) =>
+						aligns[i] ? ` style="text-align:${aligns[i]}"` : '';
+					const ths = headers
+						.map(
+							(h, i) =>
+								`<th class="px-2 py-1 border-b border-gray-200 dark:border-gray-700 font-semibold text-left"${styleAttr(i)}>${h}</th>`
+						)
+						.join('');
+					const trs = rows
+						.map(
+							(r: string[]) =>
+								`<tr>${r
+									.map(
+										(c: string, i: number) =>
+											`<td class="px-2 py-1 border-b border-gray-100 dark:border-gray-800"${styleAttr(i)}>${c}</td>`
+									)
+									.join('')}</tr>`
+						)
+						.join('');
+					return `<table class="my-2 border-collapse w-full text-sm"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
+				}
+			)
 			// Line breaks
 			.replace(/\n\n/g, '</p><p class="my-2">')
 			.replace(/\n/g, '<br>');
