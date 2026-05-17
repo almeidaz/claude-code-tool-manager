@@ -379,6 +379,51 @@ describe('WhatsNewModal Component', () => {
 		expect(screen.getByText('No release notes available.')).toBeInTheDocument();
 		(whatsNew as any).isOpen = false;
 	});
+
+	it('should render GFM tables in release notes (#235)', async () => {
+		const { whatsNew } = await import('$lib/stores/whatsNew.svelte');
+		(whatsNew as any).isOpen = true;
+		(whatsNew as any).isLoading = false;
+		(whatsNew as any).release = {
+			version: '3.10.0',
+			body: '## Download\n\n| Platform | Download |\n|----------|----------|\n| Windows | `.msi` |\n| macOS | `.dmg` |\n',
+			htmlUrl: 'https://github.com/test',
+			publishedAt: '2026-05-16'
+		};
+		render(WhatsNewModal);
+		// The raw markdown pipes should NOT be visible as text — they should be
+		// inside a <table>. This is the regression #235 reported: tables rendered
+		// as raw `|---|---|` literals.
+		const table = document.querySelector('table');
+		expect(table).toBeInTheDocument();
+		expect(table?.querySelectorAll('thead th')).toHaveLength(2);
+		expect(table?.querySelectorAll('tbody tr')).toHaveLength(2);
+		expect(table?.querySelector('thead')?.textContent).toContain('Platform');
+		expect(table?.querySelector('thead')?.textContent).toContain('Download');
+		expect(table?.querySelector('tbody')?.textContent).toContain('Windows');
+		expect(table?.querySelector('tbody')?.textContent).toContain('macOS');
+		(whatsNew as any).isOpen = false;
+		(whatsNew as any).release = null;
+	});
+
+	it('should honor table column alignment specifiers', async () => {
+		const { whatsNew } = await import('$lib/stores/whatsNew.svelte');
+		(whatsNew as any).isOpen = true;
+		(whatsNew as any).isLoading = false;
+		(whatsNew as any).release = {
+			version: '3.10.0',
+			body: '| L | C | R |\n|:---|:---:|---:|\n| a | b | c |\n',
+			htmlUrl: 'https://github.com/test',
+			publishedAt: '2026-05-16'
+		};
+		render(WhatsNewModal);
+		const ths = document.querySelectorAll('table thead th');
+		expect(ths[0].getAttribute('style')).toBe('text-align:left');
+		expect(ths[1].getAttribute('style')).toBe('text-align:center');
+		expect(ths[2].getAttribute('style')).toBe('text-align:right');
+		(whatsNew as any).isOpen = false;
+		(whatsNew as any).release = null;
+	});
 });
 
 describe('Shared index.ts exports', () => {

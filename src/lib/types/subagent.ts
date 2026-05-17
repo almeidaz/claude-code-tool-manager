@@ -8,6 +8,15 @@ export interface SubAgent {
 	permissionMode?: string;
 	skills?: string[];
 	tags?: string[];
+	disallowedTools?: string[];
+	maxTurns?: number;
+	memory?: string;
+	background?: boolean;
+	effort?: string;
+	isolation?: string;
+	hooks?: string;
+	mcpServers?: string;
+	initialPrompt?: string;
 	source: string;
 	sourcePath?: string;
 	isFavorite: boolean;
@@ -24,6 +33,15 @@ export interface CreateSubAgentRequest {
 	permissionMode?: string;
 	skills?: string[];
 	tags?: string[];
+	disallowedTools?: string[];
+	maxTurns?: number;
+	memory?: string;
+	background?: boolean;
+	effort?: string;
+	isolation?: string;
+	hooks?: string;
+	mcpServers?: string;
+	initialPrompt?: string;
 }
 
 export interface ProjectSubAgent {
